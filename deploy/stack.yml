@@ -1,0 +1,109 @@
+# Swarm stack for proba-llm. Do not `docker stack deploy` from this agent.
+# Gateway (same overlay) reaches this service at http://llm:3600. No published port.
+#
+# Supported topology (local volume, not a shared store):
+#   - replicas: 1
+#   - exactly one node labeled proba.llm=true
+#   - update order stop-first
+# A second replica or a reschedule onto another node does NOT see the turn
+# outbox; a retried Idempotency-Key can dispatch another paid provider call.
+# Do not raise replicas, drop the node label, or add extra labeled nodes unless
+# TURN_STORE_DIR is a shared durable filesystem (not provided here).
+version: "3.8"
+
+services:
+  llm:
+    image: ${REGISTRY:-ghcr.io/smallseedlabs}/proba-llm:${VERSION:-latest}
+    networks:
+      - proba-network
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - llm_turn_data:/app/data
+    working_dir: /app
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3600"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LLM_PROVIDER: deepseek
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
+      LLM_ALLOWED_HOSTS: ${LLM_ALLOWED_HOSTS:-api.deepseek.com}
+      LLM_ALLOWED_MODELS: ${LLM_ALLOWED_MODELS:-deepseek-chat}
+      LLM_API_KEY_FILE: /run/secrets/llm_api_key
+      GATEWAY_SERVICE_PUBLIC_KEY_FILE: /run/secrets/gateway_jwks
+      CALLER_ISSUERS: ${CALLER_ISSUERS:-proba-gateway}
+      CALLER_SUBJECTS: ${CALLER_SUBJECTS:-gateway}
+      AUDIT_PUBLISHER: redis
+      AUDIT_STREAM: ${AUDIT_STREAM:-proba.audit.events}
+      REDIS_URL_FILE: /run/secrets/redis_url
+      AUDIT_CONTENT_ENABLED: "true"
+      AUDIT_CONTENT_MASK_PII: "true"
+      TURN_STORE_DIR: /app/data/turns
+    secrets:
+      - llm_api_key
+      - gateway_jwks
+      - redis_url
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 90s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:'+(process.env.PORT||3600)+'/ready',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      mode: replicated
+      replicas: 1
+      endpoint_mode: vip
+      placement:
+        max_replicas_per_node: 1
+        constraints:
+          - node.labels.proba.llm == true
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        order: stop-first
+      rollback_config:
+        parallelism: 1
+        delay: 5s
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 120s
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+
+networks:
+  proba-network:
+    name: ${PROBA_NETWORK:-proba-network}
+    external: true
+
+volumes:
+  llm_turn_data:
+
+secrets:
+  llm_api_key:
+    external: true
+  gateway_jwks:
+    external: true
+  redis_url:
+    external: true

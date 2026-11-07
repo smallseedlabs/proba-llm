@@ -26,3 +26,9 @@ npm run build
 
 Configure via `.env.example`. Secrets belong in `*_FILE` mounts, not source.
 `FakeLlmProvider` is test-only.
+
+Dockerfile is `Dockerfile`. Swarm stack is `deploy/stack.yml`: overlay-only
+(`http://llm:3600` on `proba-network`), no published port, secrets at
+`/run/secrets/*`. Replicas must stay **1** on a single node labeled
+`proba.llm=true`. The turn outbox is a local volume; another replica or
+another node does not share it.
