@@ -4,6 +4,8 @@ export type RuntimeEnv = 'development' | 'test' | 'production';
 
 export type LlmProviderKind = 'deepseek';
 
+export type ThinkingMode = 'enabled' | 'disabled';
+
 export type AuditPublisherKind = 'redis' | 'log';
 
 export interface DeepSeekConfig {
@@ -13,6 +15,7 @@ export interface DeepSeekConfig {
   maxRetries: number;
   totalBudgetMs: number;
   temperature: number;
+  thinking: ThinkingMode;
   apiKey: string;
 }
 

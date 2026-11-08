@@ -11,5 +11,6 @@ export type {
   LlmServiceConfig,
   PricingConfig,
   RuntimeEnv,
+  ThinkingMode,
 } from './config.js';
 export { LLM_SERVICE_NAME } from './config.js';

@@ -52,7 +52,10 @@ describe('DeepSeekProvider', () => {
       nodeEnv: 'test',
       fetchFn,
     });
-    const result = await provider.complete(request);
+    const result = await provider.complete({
+      ...request,
+      tools: [{ name: 'lookup', description: 'lookup', parameters: { type: 'object' } }],
+    });
     expect(calls).toBe(1);
     expect(result.content).toBe('hello');
     expect(result.toolCalls).toEqual([{ id: 'c1', name: 'lookup', arguments: '{}' }]);
@@ -190,5 +193,141 @@ describe('DeepSeekProvider', () => {
     const pending = provider.complete({ ...request, signal: controller.signal });
     controller.abort();
     await expect(pending).rejects.toBeInstanceOf(TurnAbortedError);
+  });
+
+  it('maps dotted tool names to the vendor charset and back without changing the internal id', async () => {
+    let vendorBody: { tools?: Array<{ function?: { name?: string } }>; thinking?: { type?: string } } | undefined;
+    const fetchFn: typeof fetch = async (_url, init) => {
+      vendorBody = JSON.parse(String(init?.body)) as typeof vendorBody;
+      return jsonResponse({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [{ id: 'c1', function: { name: 'page__attach_user_page', arguments: '{"url":"https://example.com"}' } }],
+            },
+            finish_reason: 'tool_calls',
+          },
+        ],
+      });
+    };
+    const provider = new DeepSeekProvider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'test-model',
+      apiKey: 'sk-test',
+      timeoutMs: 1000,
+      maxRetries: 0,
+      totalBudgetMs: 5000,
+      temperature: 0,
+      allowedHosts: ['api.deepseek.com'],
+      allowedModels: ['test-model'],
+      nodeEnv: 'test',
+      fetchFn,
+    });
+    const result = await provider.complete({
+      messages: [{ role: 'user', content: 'attach' }],
+      tools: [{ name: 'page.attach_user_page', description: 'attach', parameters: { type: 'object' } }],
+    });
+    expect(vendorBody?.tools?.[0]?.function?.name).toBe('page__attach_user_page');
+    expect(vendorBody?.thinking).toEqual({ type: 'disabled' });
+    expect(result.toolCalls).toEqual([
+      { id: 'c1', name: 'page.attach_user_page', arguments: '{"url":"https://example.com"}' },
+    ]);
+  });
+
+  it('passes reasoning_content back only when thinking is enabled', async () => {
+    const bodies: Array<{ thinking?: { type?: string }; messages?: Array<{ reasoning_content?: string }> }> = [];
+    const fetchFn: typeof fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as (typeof bodies)[number]);
+      return jsonResponse({
+        choices: [{ message: { content: 'done', reasoning_content: 'because' }, finish_reason: 'stop' }],
+      });
+    };
+    const enabled = new DeepSeekProvider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'test-model',
+      apiKey: 'sk-test',
+      timeoutMs: 1000,
+      maxRetries: 0,
+      totalBudgetMs: 5000,
+      temperature: 0,
+      thinking: 'enabled',
+      allowedHosts: ['api.deepseek.com'],
+      allowedModels: ['test-model'],
+      nodeEnv: 'test',
+      fetchFn,
+    });
+    const first = await enabled.complete({
+      messages: [{ role: 'user', content: 'why' }],
+    });
+    expect(first.reasoningContent).toBe('because');
+    await enabled.complete({
+      messages: [
+        { role: 'user', content: 'why' },
+        { role: 'assistant', content: 'done', reasoningContent: 'because' },
+        { role: 'user', content: 'again' },
+      ],
+    });
+    expect(bodies[0]?.thinking).toEqual({ type: 'enabled' });
+    expect(bodies[1]?.messages?.[1]?.reasoning_content).toBe('because');
+
+    const disabledBodies: Array<{ messages?: Array<{ reasoning_content?: string }> }> = [];
+    const disabled = new DeepSeekProvider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'test-model',
+      apiKey: 'sk-test',
+      timeoutMs: 1000,
+      maxRetries: 0,
+      totalBudgetMs: 5000,
+      temperature: 0,
+      thinking: 'disabled',
+      allowedHosts: ['api.deepseek.com'],
+      allowedModels: ['test-model'],
+      nodeEnv: 'test',
+      fetchFn: async (_url, init) => {
+        disabledBodies.push(JSON.parse(String(init?.body)) as (typeof disabledBodies)[number]);
+        return jsonResponse({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] });
+      },
+    });
+    await disabled.complete({
+      messages: [
+        { role: 'user', content: 'why' },
+        { role: 'assistant', content: 'done', reasoningContent: 'because' },
+      ],
+    });
+    expect(disabledBodies[0]?.messages?.[1]?.reasoning_content).toBeUndefined();
+  });
+
+  it('refuses an unknown vendor tool name instead of inventing an internal id', async () => {
+    const provider = new DeepSeekProvider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'test-model',
+      apiKey: 'sk-test',
+      timeoutMs: 1000,
+      maxRetries: 0,
+      totalBudgetMs: 5000,
+      temperature: 0,
+      allowedHosts: ['api.deepseek.com'],
+      allowedModels: ['test-model'],
+      nodeEnv: 'test',
+      fetchFn: async () =>
+        jsonResponse({
+          choices: [
+            {
+              message: {
+                content: null,
+                tool_calls: [{ id: 'c1', function: { name: 'not_declared', arguments: '{}' } }],
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+    });
+    await expect(
+      provider.complete({
+        messages: [{ role: 'user', content: 'x' }],
+        tools: [{ name: 'page.attach_user_page' }],
+      })
+    ).rejects.toMatchObject({ retryable: false, message: expect.stringMatching(/unknown vendor function name/) });
   });
 });

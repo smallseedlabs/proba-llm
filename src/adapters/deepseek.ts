@@ -8,7 +8,13 @@ import {
   type LlmResponse,
   type LlmToolCall,
 } from '../ports/provider.js';
-import type { LlmServiceConfig } from '../types/config.js';
+import type { LlmServiceConfig, ThinkingMode } from '../types/config.js';
+import {
+  buildFunctionNameMap,
+  collectInternalFunctionNames,
+  FunctionNameMappingError,
+  type FunctionNameMap,
+} from './function-names.js';
 
 export interface DeepSeekProviderOptions {
   baseUrl: string;
@@ -18,6 +24,7 @@ export interface DeepSeekProviderOptions {
   maxRetries: number;
   totalBudgetMs: number;
   temperature: number;
+  thinking?: ThinkingMode;
   allowedHosts: readonly string[];
   allowedModels: readonly string[];
   nodeEnv: string;
@@ -45,35 +52,44 @@ interface ChatResponse {
 
 const RETRYABLE_STATUS = new Set([408, 429, 502, 503, 504]);
 
-function toVendorMessages(messages: LlmMessage[]): Array<Record<string, unknown>> {
+function toVendorMessages(
+  messages: LlmMessage[],
+  names: FunctionNameMap,
+  thinking: ThinkingMode
+): Array<Record<string, unknown>> {
   return messages.map((m) => {
     if (m.role === 'tool') {
       return { role: 'tool', content: m.content, ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}) };
     }
-    if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
-      return {
-        role: 'assistant',
-        content: m.content,
-        tool_calls: m.toolCalls.map((t) => ({
+    if (m.role === 'assistant') {
+      const row: Record<string, unknown> = { role: 'assistant', content: m.content };
+      if (thinking === 'enabled' && m.reasoningContent != null && m.reasoningContent !== '') {
+        row.reasoning_content = m.reasoningContent;
+      }
+      if (m.toolCalls && m.toolCalls.length > 0) {
+        row.tool_calls = m.toolCalls.map((t) => ({
           id: t.id,
           type: 'function',
-          function: { name: t.name, arguments: t.arguments },
-        })),
-      };
+          function: { name: names.toVendor(t.name), arguments: t.arguments },
+        }));
+      }
+      return row;
     }
     return { role: m.role, content: m.content };
   });
 }
 
-function parseToolCalls(raw: ChatResponse['choices']): LlmToolCall[] | undefined {
+function parseToolCalls(raw: ChatResponse['choices'], names: FunctionNameMap): LlmToolCall[] | undefined {
   const calls = raw?.[0]?.message?.tool_calls;
   if (!calls || calls.length === 0) return undefined;
   const parsed: LlmToolCall[] = [];
   for (const call of calls) {
-    if (!call.id || !call.function?.name) continue;
+    if (!call.id || !call.function?.name) {
+      throw new FunctionNameMappingError('vendor tool call is missing id or name');
+    }
     parsed.push({
       id: call.id,
-      name: call.function.name,
+      name: names.toInternal(call.function.name),
       arguments: typeof call.function.arguments === 'string' ? call.function.arguments : '{}',
     });
   }
@@ -89,8 +105,16 @@ export class DeepSeekProvider implements LlmProvider {
   readonly name = 'deepseek';
   private readonly fetchFn: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly options: DeepSeekProviderOptions;
+  private readonly thinking: ThinkingMode;
 
-  constructor(private readonly options: DeepSeekProviderOptions) {
+  constructor(options: DeepSeekProviderOptions) {
+    const thinking = options.thinking ?? 'disabled';
+    if (thinking !== 'enabled' && thinking !== 'disabled') {
+      throw new Error('LLM_THINKING must be enabled or disabled');
+    }
+    this.thinking = thinking;
+    this.options = { ...options, thinking };
     this.fetchFn = options.fetchFn ?? fetch;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     if (!options.baseUrl) throw new Error('LLM_BASE_URL is required');
@@ -113,6 +137,13 @@ export class DeepSeekProvider implements LlmProvider {
     }
     const url = assertAllowedBaseUrl(this.options.baseUrl, this.options.allowedHosts, this.options.nodeEnv);
     const endpoint = `${trimBaseUrl(url.toString())}/chat/completions`;
+    let names: FunctionNameMap;
+    try {
+      names = buildFunctionNameMap(collectInternalFunctionNames(request.tools, request.messages));
+    } catch (err) {
+      if (err instanceof FunctionNameMappingError) throw new LlmProviderError(err.message, false);
+      throw err;
+    }
     const started = Date.now();
     const budgetMs = this.options.totalBudgetMs;
     let lastError: Error | undefined;
@@ -137,16 +168,21 @@ export class DeepSeekProvider implements LlmProvider {
           },
           body: JSON.stringify({
             model,
-            messages: toVendorMessages(request.messages),
+            messages: toVendorMessages(request.messages, names, this.thinking),
             temperature: request.temperature ?? this.options.temperature,
             stream: false,
+            thinking: { type: this.thinking },
             ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
             ...(request.json ? { response_format: { type: 'json_object' } } : {}),
             ...(request.tools && request.tools.length > 0
               ? {
                   tools: request.tools.map((t) => ({
                     type: 'function',
-                    function: { name: t.name, description: t.description, parameters: t.parameters ?? { type: 'object' } },
+                    function: {
+                      name: names.toVendor(t.name),
+                      description: t.description,
+                      parameters: t.parameters ?? { type: 'object' },
+                    },
                   })),
                 }
               : {}),
@@ -163,14 +199,22 @@ export class DeepSeekProvider implements LlmProvider {
           }
           const choice = body.choices?.[0];
           const content = choice?.message?.content ?? null;
-          const toolCalls = parseToolCalls(body.choices);
+          let toolCalls: LlmToolCall[] | undefined;
+          try {
+            toolCalls = parseToolCalls(body.choices, names);
+          } catch (err) {
+            if (err instanceof FunctionNameMappingError) throw new LlmProviderError(err.message, false);
+            throw err;
+          }
           const reasoning = choice?.message?.reasoning_content;
           return {
             content: typeof content === 'string' ? content : null,
             ...(toolCalls ? { toolCalls } : {}),
             model: body.model ?? model,
             finishReason: choice?.finish_reason,
-            ...(reasoning ? { reasoningChars: reasoning.length } : {}),
+            ...(typeof reasoning === 'string' && reasoning.length > 0
+              ? { reasoningChars: reasoning.length, reasoningContent: reasoning }
+              : {}),
             usage: {
               promptTokens: body.usage?.prompt_tokens,
               completionTokens: body.usage?.completion_tokens,
@@ -191,6 +235,9 @@ export class DeepSeekProvider implements LlmProvider {
       } catch (err) {
         if (err instanceof TurnAbortedError || err instanceof ModelRefusedError || err instanceof HostRefusedError) {
           throw err;
+        }
+        if (err instanceof FunctionNameMappingError) {
+          throw new LlmProviderError(err.message, false);
         }
         if (err instanceof LlmProviderError) {
           if (!err.retryable || attempt >= attempts) throw err;
@@ -231,6 +278,7 @@ export function deepSeekOptionsFromConfig(config: LlmServiceConfig, fetchFn?: ty
     maxRetries: config.deepseek.maxRetries,
     totalBudgetMs: config.deepseek.totalBudgetMs,
     temperature: config.deepseek.temperature,
+    thinking: config.deepseek.thinking,
     allowedHosts: config.allowedHosts,
     allowedModels: config.allowedModels,
     nodeEnv: config.env,

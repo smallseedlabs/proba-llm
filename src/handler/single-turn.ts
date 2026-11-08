@@ -211,7 +211,14 @@ export class SingleTurnHandler {
     const toolCalls = result.toolCalls;
     const hasTools = Boolean(toolCalls && toolCalls.length > 0);
     const response: TurnResponse = {
-      message: { role: 'assistant', content: result.content, ...(toolCalls ? { toolCalls } : {}) },
+      message: {
+        role: 'assistant',
+        content: result.content,
+        ...(toolCalls ? { toolCalls } : {}),
+        ...(result.reasoningContent != null && result.reasoningContent !== ''
+          ? { reasoningContent: result.reasoningContent }
+          : {}),
+      },
       finishReason: finishReasonOf(result.finishReason, hasTools),
       model: result.model,
       provider: this.deps.provider.name,
