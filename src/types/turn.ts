@@ -35,6 +35,7 @@ export const llmMessageSchema = z
       )
       .max(16)
       .optional(),
+    reasoningContent: z.string().max(200_000).nullable().optional(),
   })
   .strict();
 
@@ -79,6 +80,7 @@ export interface TurnResponse {
     role: 'assistant';
     content: string | null;
     toolCalls?: LlmToolCall[];
+    reasoningContent?: string | null;
   };
   finishReason: 'stop' | 'tool_calls' | 'length' | 'unknown';
   model: string;

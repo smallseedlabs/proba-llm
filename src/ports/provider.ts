@@ -19,6 +19,8 @@ export interface LlmMessage {
   content: string;
   toolCallId?: string;
   toolCalls?: LlmToolCall[];
+  /** Vendor thinking text. Passed through only when thinking is enabled; not a tool. */
+  reasoningContent?: string | null;
 }
 
 export interface LlmToolDefinition {
@@ -52,6 +54,7 @@ export interface LlmResponse {
   finishReason?: string;
   /** Present when the vendor returned reasoning separately; not executed as a tool. */
   reasoningChars?: number;
+  reasoningContent?: string | null;
 }
 
 export class LlmProviderError extends Error {

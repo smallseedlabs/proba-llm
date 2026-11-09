@@ -48,6 +48,12 @@ function envSecret(env: NodeJS.ProcessEnv, name: string): string {
   return (env[name] ?? '').trim();
 }
 
+function thinkingMode(raw: string | undefined): 'enabled' | 'disabled' {
+  const value = (raw ?? 'disabled').trim().toLowerCase();
+  if (value === 'enabled' || value === 'disabled') return value;
+  throw new ConfigError('LLM_THINKING must be enabled or disabled');
+}
+
 function runtimeEnv(raw: string | undefined): RuntimeEnv {
   const value = (raw ?? 'development').trim().toLowerCase();
   if (value === 'development' || value === 'test' || value === 'production') return value;
@@ -115,6 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LlmServiceConf
       maxRetries: envInt(env, 'LLM_MAX_RETRIES', 1, 0, 4),
       totalBudgetMs: envInt(env, 'LLM_TOTAL_BUDGET_MS', 90_000, 100, 600_000),
       temperature: envNumber(env, 'LLM_TEMPERATURE') ?? 0,
+      thinking: thinkingMode(env.LLM_THINKING),
       apiKey,
     },
     allowedHosts,
