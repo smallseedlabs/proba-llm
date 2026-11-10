@@ -141,11 +141,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LlmServiceConf
       rateLimitMax: envInt(env, 'RATE_LIMIT_MAX', 60, 1, 10_000),
       rateLimitWindowMs: envInt(env, 'RATE_LIMIT_WINDOW_MS', 60_000, 1000, 3_600_000),
     },
-    pricing: {
-      version: env.PRICING_VERSION?.trim() || null,
-      promptUsdPerMillion: envNumber(env, 'PRICE_PROMPT_USD_PER_MILLION'),
-      completionUsdPerMillion: envNumber(env, 'PRICE_COMPLETION_USD_PER_MILLION'),
-    },
+    pricing: pricingFromEnv(env),
     audit: {
       kind: auditKind,
       stream: (env.AUDIT_STREAM ?? 'proba.audit.events').trim() || 'proba.audit.events',
@@ -156,4 +152,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LlmServiceConf
     },
     turnStoreDir,
   };
+}
+
+/**
+ * Unit prices come only from the operator's PRICE_* values. When both are set without PRICING_VERSION,
+ * the version names that price table (`env:<prompt>/<completion>`) so a cost estimate is still attributable.
+ */
+function pricingFromEnv(env: NodeJS.ProcessEnv): LlmServiceConfig['pricing'] {
+  const promptUsdPerMillion = envNumber(env, 'PRICE_PROMPT_USD_PER_MILLION');
+  const completionUsdPerMillion = envNumber(env, 'PRICE_COMPLETION_USD_PER_MILLION');
+  const explicit = env.PRICING_VERSION?.trim() || null;
+  const derived =
+    promptUsdPerMillion !== null && completionUsdPerMillion !== null
+      ? `env:${promptUsdPerMillion}/${completionUsdPerMillion}`
+      : null;
+  return { version: explicit ?? derived, promptUsdPerMillion, completionUsdPerMillion };
 }
