@@ -18,7 +18,7 @@ const body = {
   messages: [{ role: 'user', content: 'plan a campaign' }],
 };
 
-async function harness() {
+async function harness(extraEnv: Record<string, string> = {}) {
   const signer = await createTestSigner();
   const now = () => new Date('2026-01-01T00:00:00.000Z');
   const config = loadConfig({
@@ -28,6 +28,7 @@ async function harness() {
     LLM_ALLOWED_HOSTS: 'api.deepseek.com',
     LLM_ALLOWED_MODELS: 'deepseek-chat,fake-test-model',
     AUDIT_CONTENT_ENABLED: 'true',
+    ...extraEnv,
   });
   const provider = new FakeLlmProvider();
   const audit = new MemoryAuditPublisher();
@@ -51,6 +52,28 @@ async function harness() {
   });
   return { app, signer, now, provider, audit };
 }
+
+describe('HTTP /v1/pricing', () => {
+  it('is 404 when prices are not configured, so the gateway never treats them as $0', async () => {
+    const { app } = await harness();
+    const res = await app.inject({ method: 'GET', url: '/v1/pricing' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe('pricing_unconfigured');
+    await app.close();
+  });
+
+  it('serves the configured unit rates in the shape the gateway preflight reads', async () => {
+    const { app } = await harness({ PRICE_PROMPT_USD_PER_MILLION: '0.27', PRICE_COMPLETION_USD_PER_MILLION: '1.1' });
+    const res = await app.inject({ method: 'GET', url: '/v1/pricing' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ promptUsdPerMillion: 0.27, completionUsdPerMillion: 1.1, currency: 'USD', version: 'env:0.27/1.1' });
+    await app.close();
+
+    const named = await harness({ PRICE_PROMPT_USD_PER_MILLION: '0.27', PRICE_COMPLETION_USD_PER_MILLION: '1.1', PRICING_VERSION: 'deepseek-2026-11' });
+    expect((await named.app.inject({ method: 'GET', url: '/v1/pricing' })).json().version).toBe('deepseek-2026-11');
+    await named.app.close();
+  });
+});
 
 describe('HTTP /v1/complete', () => {
   it('requires a verified gateway token and completes one turn', async () => {
