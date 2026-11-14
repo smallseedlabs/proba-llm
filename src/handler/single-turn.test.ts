@@ -30,7 +30,12 @@ const baseRequest: TurnRequest = {
   messages: [{ role: 'user', content: 'hello api_key=sk-live-abcdefghijklmnopqrstuvwxyz' }],
 };
 
-function handler(provider: FakeLlmProvider, audit = new MemoryAuditPublisher(), turns = new MemoryTurnStore()) {
+function handler(
+  provider: FakeLlmProvider,
+  audit = new MemoryAuditPublisher(),
+  turns = new MemoryTurnStore(),
+  extraEnv: Record<string, string> = {}
+) {
   const config = loadConfig({
     NODE_ENV: 'test',
     LLM_BASE_URL: 'https://api.deepseek.com',
@@ -39,6 +44,7 @@ function handler(provider: FakeLlmProvider, audit = new MemoryAuditPublisher(), 
     LLM_ALLOWED_MODELS: 'deepseek-chat,fake-test-model',
     AUDIT_CONTENT_ENABLED: 'true',
     LLM_MAX_MESSAGE_CHARS: '40000',
+    ...extraEnv,
   });
   return { audit, turns, inner: new SingleTurnHandler({ provider, audit, clock: new SystemClock(), config, turns }) };
 }
@@ -65,6 +71,30 @@ describe('SingleTurnHandler', () => {
     expect(audit.events[2].details).toMatchObject({ tool: 'launch_campaign' });
     const ids = audit.events.map((e) => e.eventId);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('audits cache-aware cost and both cache token counts', async () => {
+    const provider = new FakeLlmProvider({
+      responder: async () => ({
+        content: 'ok',
+        model: 'fake-test-model',
+        finishReason: 'stop',
+        usage: { promptTokens: 1_000, completionTokens: 50, cachedTokens: 800, cacheMissTokens: 200 },
+      }),
+    });
+    const { inner, audit } = handler(provider, new MemoryAuditPublisher(), new MemoryTurnStore(), {
+      PRICE_PROMPT_USD_PER_MILLION: '0.3',
+      PRICE_COMPLETION_USD_PER_MILLION: '1.2',
+      PRICE_PROMPT_CACHE_HIT_USD_PER_MILLION: '0.006',
+    });
+    const result = await inner.handle(baseRequest, caller);
+    const expected = (800 / 1_000_000) * 0.006 + (200 / 1_000_000) * 0.3 + (50 / 1_000_000) * 1.2;
+    expect(result.cost.estimate).toBeCloseTo(expected, 12);
+    expect(result.usage).toMatchObject({ cachedTokens: 800, cacheMissTokens: 200, promptTokens: 1_000, completionTokens: 50 });
+    const call = audit.events.find((e) => e.action === 'brain.llm_call');
+    expect(call?.cost?.amount).toBeCloseTo(expected, 12);
+    expect(call?.details?.pricingVersion).toBe('env:0.3/1.2/hit:0.006');
+    expect(call?.details?.costEstimate).toBeCloseTo(expected, 12);
   });
 
   it('does not redispatch the provider when Redis publish fails, and retries publish the same eventIds', async () => {

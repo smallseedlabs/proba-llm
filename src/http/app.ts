@@ -97,14 +97,20 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   // Operator-configured unit prices, read by the gateway preflight to enforce GATEWAY_MAX_COST_USD.
   // Public numbers, no caller data. 404 = not configured (the gateway treats that as unknown, never $0).
   app.get('/v1/pricing', async (_request, reply) => {
-    const { version, promptUsdPerMillion, completionUsdPerMillion } = deps.config.pricing;
+    const { version, promptUsdPerMillion, completionUsdPerMillion, promptCacheHitUsdPerMillion } = deps.config.pricing;
     const positive = (n: number | null): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
     if (!version || !positive(promptUsdPerMillion) || !positive(completionUsdPerMillion)) {
       return reply
         .status(404)
         .send(errorBody('pricing_unconfigured', 'set PRICE_PROMPT_USD_PER_MILLION and PRICE_COMPLETION_USD_PER_MILLION'));
     }
-    return reply.send({ promptUsdPerMillion, completionUsdPerMillion, currency: 'USD', version });
+    return reply.send({
+      promptUsdPerMillion,
+      completionUsdPerMillion,
+      currency: 'USD',
+      version,
+      ...(promptCacheHitUsdPerMillion !== null ? { promptCacheHitUsdPerMillion } : {}),
+    });
   });
 
   app.post('/v1/complete', async (request, reply) => {

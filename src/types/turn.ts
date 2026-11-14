@@ -89,6 +89,7 @@ export interface TurnResponse {
     promptTokens?: number;
     completionTokens?: number;
     cachedTokens?: number;
+    cacheMissTokens?: number;
     reasoningTokens?: number;
   };
   latencyMs: number;

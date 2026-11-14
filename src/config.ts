@@ -155,16 +155,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): LlmServiceConf
 }
 
 /**
- * Unit prices come only from the operator's PRICE_* values. When both are set without PRICING_VERSION,
- * the version names that price table (`env:<prompt>/<completion>`) so a cost estimate is still attributable.
+ * Unit prices come only from the operator's PRICE_* values. When prompt and completion
+ * rates are set without PRICING_VERSION, the version names that price table
+ * (`env:<prompt>/<completion>` or `env:<prompt>/<completion>/hit:<hit>`) so a cost
+ * estimate is still attributable. The cache-hit rate is optional and never inferred.
  */
 function pricingFromEnv(env: NodeJS.ProcessEnv): LlmServiceConfig['pricing'] {
   const promptUsdPerMillion = envNumber(env, 'PRICE_PROMPT_USD_PER_MILLION');
   const completionUsdPerMillion = envNumber(env, 'PRICE_COMPLETION_USD_PER_MILLION');
+  const promptCacheHitUsdPerMillion = envNumber(env, 'PRICE_PROMPT_CACHE_HIT_USD_PER_MILLION');
   const explicit = env.PRICING_VERSION?.trim() || null;
   const derived =
     promptUsdPerMillion !== null && completionUsdPerMillion !== null
-      ? `env:${promptUsdPerMillion}/${completionUsdPerMillion}`
+      ? promptCacheHitUsdPerMillion !== null
+        ? `env:${promptUsdPerMillion}/${completionUsdPerMillion}/hit:${promptCacheHitUsdPerMillion}`
+        : `env:${promptUsdPerMillion}/${completionUsdPerMillion}`
       : null;
-  return { version: explicit ?? derived, promptUsdPerMillion, completionUsdPerMillion };
+  return { version: explicit ?? derived, promptUsdPerMillion, completionUsdPerMillion, promptCacheHitUsdPerMillion };
 }

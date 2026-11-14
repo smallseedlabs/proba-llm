@@ -46,11 +46,45 @@ interface ChatResponse {
     prompt_tokens?: number;
     completion_tokens?: number;
     prompt_cache_hit_tokens?: number;
+    prompt_cache_miss_tokens?: number;
     completion_tokens_details?: { reasoning_tokens?: number };
   };
 }
 
 const RETRYABLE_STATUS = new Set([408, 429, 502, 503, 504]);
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function mapUsage(usage: ChatResponse['usage']): LlmResponse['usage'] {
+  const promptTokens = usage?.prompt_tokens;
+  let cachedTokens = usage?.prompt_cache_hit_tokens;
+  let cacheMissTokens = usage?.prompt_cache_miss_tokens;
+  if (
+    !finiteNumber(cachedTokens) &&
+    finiteNumber(promptTokens) &&
+    finiteNumber(cacheMissTokens) &&
+    cacheMissTokens <= promptTokens
+  ) {
+    cachedTokens = promptTokens - cacheMissTokens;
+  }
+  if (
+    !finiteNumber(cacheMissTokens) &&
+    finiteNumber(promptTokens) &&
+    finiteNumber(cachedTokens) &&
+    cachedTokens <= promptTokens
+  ) {
+    cacheMissTokens = promptTokens - cachedTokens;
+  }
+  return {
+    promptTokens,
+    completionTokens: usage?.completion_tokens,
+    cachedTokens,
+    cacheMissTokens,
+    reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens,
+  };
+}
 
 function toVendorMessages(
   messages: LlmMessage[],
@@ -215,12 +249,7 @@ export class DeepSeekProvider implements LlmProvider {
             ...(typeof reasoning === 'string' && reasoning.length > 0
               ? { reasoningChars: reasoning.length, reasoningContent: reasoning }
               : {}),
-            usage: {
-              promptTokens: body.usage?.prompt_tokens,
-              completionTokens: body.usage?.completion_tokens,
-              cachedTokens: body.usage?.prompt_cache_hit_tokens,
-              reasoningTokens: body.usage?.completion_tokens_details?.reasoning_tokens,
-            },
+            usage: mapUsage(body.usage),
           };
         }
         const status = response.status;

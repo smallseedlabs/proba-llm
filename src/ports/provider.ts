@@ -42,7 +42,10 @@ export interface LlmRequest {
 export interface LlmUsage {
   promptTokens?: number;
   completionTokens?: number;
+  /** Prompt tokens billed at the cache-hit input rate (DeepSeek `prompt_cache_hit_tokens`). */
   cachedTokens?: number;
+  /** Prompt tokens billed at the full input rate (DeepSeek `prompt_cache_miss_tokens`). */
+  cacheMissTokens?: number;
   reasoningTokens?: number;
 }
 
