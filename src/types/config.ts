@@ -44,6 +44,8 @@ export interface PricingConfig {
   version: string | null;
   promptUsdPerMillion: number | null;
   completionUsdPerMillion: number | null;
+  /** Cache-hit input rate. Null means charge every prompt token at promptUsdPerMillion. */
+  promptCacheHitUsdPerMillion: number | null;
 }
 
 export interface AuditConfig {

@@ -27,8 +27,9 @@ import type { Clock } from '../ports/clock.js';
 import type { LlmProvider, LlmResponse, VerifiedCaller } from '../ports/index.js';
 import type { TurnRecord, TurnStore } from '../ports/turn-store.js';
 import { LlmProviderError } from '../ports/provider.js';
+import { costOf } from '../cost.js';
 import { LLM_SERVICE_NAME } from '../types/config.js';
-import type { CostEstimate, LlmServiceConfig, TurnRequest, TurnResponse } from '../types/index.js';
+import type { LlmServiceConfig, TurnRequest, TurnResponse } from '../types/index.js';
 
 export interface SingleTurnHandlerDeps {
   provider: LlmProvider;
@@ -36,22 +37,6 @@ export interface SingleTurnHandlerDeps {
   clock: Clock;
   config: LlmServiceConfig;
   turns: TurnStore;
-}
-
-function costOf(usage: LlmResponse['usage'], pricing: LlmServiceConfig['pricing']): CostEstimate {
-  if (
-    !pricing.version ||
-    pricing.promptUsdPerMillion === null ||
-    pricing.completionUsdPerMillion === null ||
-    usage?.promptTokens === undefined ||
-    usage.completionTokens === undefined
-  ) {
-    return { estimate: 'unknown' };
-  }
-  const amount =
-    (usage.promptTokens / 1_000_000) * pricing.promptUsdPerMillion +
-    (usage.completionTokens / 1_000_000) * pricing.completionUsdPerMillion;
-  return { estimate: amount, currency: 'USD', pricingVersion: pricing.version };
 }
 
 function finishReasonOf(raw: string | undefined, hasTools: boolean): TurnResponse['finishReason'] {

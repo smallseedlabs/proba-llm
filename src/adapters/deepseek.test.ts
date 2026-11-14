@@ -60,6 +60,43 @@ describe('DeepSeekProvider', () => {
     expect(result.content).toBe('hello');
     expect(result.toolCalls).toEqual([{ id: 'c1', name: 'lookup', arguments: '{}' }]);
     expect(result.usage?.cachedTokens).toBe(1);
+    expect(result.usage?.cacheMissTokens).toBe(2);
+    expect(result.usage?.promptTokens).toBe(3);
+  });
+
+  it('maps prompt_cache_miss_tokens and does not re-derive when both cache fields are present', async () => {
+    const fetchFn: typeof fetch = async () =>
+      jsonResponse({
+        model: 'deepseek-chat',
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 2,
+          prompt_cache_hit_tokens: 7,
+          prompt_cache_miss_tokens: 3,
+        },
+      });
+    const provider = new DeepSeekProvider({
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
+      apiKey: 'sk-test',
+      timeoutMs: 1000,
+      maxRetries: 0,
+      totalBudgetMs: 5000,
+      temperature: 0,
+      allowedHosts: ['api.deepseek.com'],
+      allowedModels: ['deepseek-chat'],
+      nodeEnv: 'test',
+      fetchFn,
+    });
+    const result = await provider.complete(request);
+    expect(result.usage).toEqual({
+      promptTokens: 10,
+      completionTokens: 2,
+      cachedTokens: 7,
+      cacheMissTokens: 3,
+      reasoningTokens: undefined,
+    });
   });
 
   it('retries 429 within the budget and does not mix models', async () => {

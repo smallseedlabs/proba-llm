@@ -18,7 +18,7 @@ const body = {
   messages: [{ role: 'user', content: 'plan a campaign' }],
 };
 
-async function harness(extraEnv: Record<string, string> = {}) {
+async function harness(extraEnv: Record<string, string> = {}, provider = new FakeLlmProvider()) {
   const signer = await createTestSigner();
   const now = () => new Date('2026-01-01T00:00:00.000Z');
   const config = loadConfig({
@@ -30,7 +30,6 @@ async function harness(extraEnv: Record<string, string> = {}) {
     AUDIT_CONTENT_ENABLED: 'true',
     ...extraEnv,
   });
-  const provider = new FakeLlmProvider();
   const audit = new MemoryAuditPublisher();
   const turns = new MemoryTurnStore();
   const clock = new SystemClock();
@@ -73,6 +72,24 @@ describe('HTTP /v1/pricing', () => {
     expect((await named.app.inject({ method: 'GET', url: '/v1/pricing' })).json().version).toBe('deepseek-2026-11');
     await named.app.close();
   });
+
+  it('includes the optional cache-hit input rate without changing the required gateway fields', async () => {
+    const { app } = await harness({
+      PRICE_PROMPT_USD_PER_MILLION: '0.3',
+      PRICE_COMPLETION_USD_PER_MILLION: '1.2',
+      PRICE_PROMPT_CACHE_HIT_USD_PER_MILLION: '0.006',
+    });
+    const res = await app.inject({ method: 'GET', url: '/v1/pricing' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({
+      promptUsdPerMillion: 0.3,
+      completionUsdPerMillion: 1.2,
+      currency: 'USD',
+      version: 'env:0.3/1.2/hit:0.006',
+      promptCacheHitUsdPerMillion: 0.006,
+    });
+    await app.close();
+  });
 });
 
 describe('HTTP /v1/complete', () => {
@@ -104,6 +121,38 @@ describe('HTTP /v1/complete', () => {
     });
     expect(again.statusCode).toBe(200);
     expect(provider.calls).toHaveLength(1);
+    await app.close();
+  });
+
+  it('records cache-aware cost and exposes hit and miss tokens on the turn usage', async () => {
+    const provider = new FakeLlmProvider({
+      responder: async () => ({
+        content: 'ok',
+        model: 'fake-test-model',
+        finishReason: 'stop',
+        usage: { promptTokens: 1_000, completionTokens: 50, cachedTokens: 800, cacheMissTokens: 200 },
+      }),
+    });
+    const { app, signer, now } = await harness(
+      {
+        PRICE_PROMPT_USD_PER_MILLION: '0.3',
+        PRICE_COMPLETION_USD_PER_MILLION: '1.2',
+        PRICE_PROMPT_CACHE_HIT_USD_PER_MILLION: '0.006',
+      },
+      provider
+    );
+    const token = await mintGatewayToken(signer, now);
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/v1/complete',
+      payload: body,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(ok.statusCode).toBe(200);
+    const json = ok.json();
+    expect(json.usage).toEqual({ promptTokens: 1_000, completionTokens: 50, cachedTokens: 800, cacheMissTokens: 200 });
+    expect(json.cost.estimate).toBeCloseTo((800 / 1_000_000) * 0.006 + (200 / 1_000_000) * 0.3 + (50 / 1_000_000) * 1.2, 12);
+    expect(json.cost).toMatchObject({ currency: 'USD', pricingVersion: 'env:0.3/1.2/hit:0.006' });
     await app.close();
   });
 
